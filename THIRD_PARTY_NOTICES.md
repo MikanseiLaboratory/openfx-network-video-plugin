@@ -7,10 +7,13 @@ The NDI® runtime DLL is not a crate. See `NDI_TERMS.txt` and the unmodified `Pr
 
 ## OpenFX headers
 
-Vendored from [AcademySoftwareFoundation/openfx](https://github.com/AcademySoftwareFoundation/openfx)
+Come from [openfx-pixels](https://github.com/MikanseiLaboratory/openfx-pixels)
+git revision `c0582afae3c59ec1fe40d463afe6ae7b5ed24801`.
+
+Vendored there from [AcademySoftwareFoundation/openfx](https://github.com/AcademySoftwareFoundation/openfx)
 commit `3de640d6f645fe6e346acd57e568d8b0a5ae4574`.
 
-BSD 3-Clause License. The full text is in `crates/openfx/vendor/LICENSE.md`.
+BSD 3-Clause License. The full text is in that repository at `crates/openfx/vendor/LICENSE.md`.
 
 ```text
 Copyright (c) 2025, OpenFX and contributors to the OpenFX project
@@ -33,6 +36,6 @@ NDI runtime discovery and delay-load packaging follow `aviutl2-ndi-output`.
 
 ## Remaining crates
 
-See `Cargo.lock` for the complete, version-pinned dependency graph. Runtime and build crates include bindgen, clang-sys, grafton-ndi, windows-sys, and the OpenFX helper crate in this workspace.
+See `Cargo.lock` for the complete, version-pinned dependency graph. Runtime and build crates include bindgen, clang-sys, grafton-ndi, windows-sys, and [openfx-pixels](https://github.com/MikanseiLaboratory/openfx-pixels).
 
 License texts for crates.io packages can be regenerated with `cargo about generate` when `cargo-about` is available.

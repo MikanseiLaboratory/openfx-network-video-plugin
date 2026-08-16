@@ -58,16 +58,28 @@ fn solid_rgba(size: u32, r: u8, g: u8, b: u8, a: u8) -> ConvertedVideo {
         x2: size as i32,
         y2: size as i32,
     };
-    convert_window_to_rgba(window, PixelDepth::Byte, PixelComponents::Rgba, |_, _| {
-        Some(vec![r, g, b, a])
-    })
+    let mut src = vec![0u8; (size * size * 4) as usize];
+    for px in src.chunks_exact_mut(4) {
+        px.copy_from_slice(&[r, g, b, a]);
+    }
+    unsafe {
+        convert_window_to_rgba(
+            window,
+            window,
+            (size * 4) as i32,
+            src.as_ptr(),
+            PixelDepth::Byte,
+            PixelComponents::Rgba,
+        )
+    }
     .expect("convert")
 }
 
 fn video_frame(converted: ConvertedVideo, timecode: i64) -> VideoFrame {
-    let format = match converted.pixel_format {
-        openfx_network_video::PixelFormatKind::Rgba => PixelFormat::RGBA,
-        openfx_network_video::PixelFormatKind::Rgbx => PixelFormat::RGBX,
+    let format = if converted.has_alpha {
+        PixelFormat::RGBA
+    } else {
+        PixelFormat::RGBX
     };
     let mut frame = VideoFrame::builder()
         .resolution(converted.width as i32, converted.height as i32)
@@ -76,7 +88,7 @@ fn video_frame(converted: ConvertedVideo, timecode: i64) -> VideoFrame {
         .timecode(timecode)
         .build()
         .expect("video frame");
-    frame.replace_data(converted.rgba).expect("replace");
+    frame.replace_data(converted.data).expect("replace");
     frame
 }
 

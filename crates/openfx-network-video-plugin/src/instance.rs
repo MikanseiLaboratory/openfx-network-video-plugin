@@ -1,26 +1,28 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use openfx::bindings::{OfxImageEffectHandle, OfxTime};
 use openfx::status::OfxResult;
 use openfx::suites::Suites;
 
 use crate::config::PluginConfig;
-use crate::media::SessionClock;
 use crate::params;
 use crate::sender::{SendSession, VideoJob};
+use openfx_pixels::{PixelPool, SessionClock};
 
 pub struct PluginInstance {
     pub suites: Suites,
     config: Mutex<PluginConfig>,
     session: Mutex<Option<SendSession>>,
-    last_sent_time: DuplicateTimeGuard,
     clock: Mutex<SessionClock>,
+    pixel_pool: Arc<PixelPool>,
 }
 
+#[cfg(test)]
 pub struct DuplicateTimeGuard {
     last: Mutex<Option<OfxTime>>,
 }
 
+#[cfg(test)]
 impl DuplicateTimeGuard {
     pub fn new() -> Self {
         Self {
@@ -38,6 +40,7 @@ impl DuplicateTimeGuard {
     }
 }
 
+#[cfg(test)]
 impl Default for DuplicateTimeGuard {
     fn default() -> Self {
         Self::new()
@@ -51,15 +54,17 @@ impl PluginInstance {
             suites,
             config: Mutex::new(config.clone()),
             session: Mutex::new(None),
-            last_sent_time: DuplicateTimeGuard::new(),
             clock: Mutex::new(SessionClock::new()),
+            pixel_pool: Arc::new(PixelPool::new()),
         };
         instance.apply_config(config);
         Ok(instance)
     }
 
     pub fn sync_from_params(&self, effect: OfxImageEffectHandle, time: OfxTime) -> OfxResult<()> {
-        let config = params::read_config(&self.suites, effect, time)?;
+        let Ok(config) = params::read_config(&self.suites, effect, time) else {
+            return Ok(());
+        };
         let changed = {
             let current = self.config.lock().unwrap_or_else(|e| e.into_inner());
             *current != config
@@ -81,7 +86,7 @@ impl PluginInstance {
         }
         *session = None;
         if config.enabled {
-            match SendSession::start(config) {
+            match SendSession::start_with_pool(config, Arc::clone(&self.pixel_pool)) {
                 Ok(started) => *session = Some(started),
                 Err(err) => eprintln!("NDI sender start failed: {err}"),
             }
@@ -95,8 +100,8 @@ impl PluginInstance {
             .clone()
     }
 
-    pub fn should_send(&self, time: OfxTime) -> bool {
-        self.last_sent_time.should_send(time)
+    pub fn pixel_pool(&self) -> &PixelPool {
+        &self.pixel_pool
     }
 
     pub fn next_timestamp(&self) -> i64 {

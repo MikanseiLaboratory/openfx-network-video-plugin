@@ -6,8 +6,9 @@ mod pixels;
 mod sender;
 
 pub use config::{PluginConfig, fps_to_rational};
-pub use media::{
-    ConvertedVideo, PixelFormatKind, SessionClock, convert_window_to_rgba, video_interval_ticks,
+pub use media::PixelFormatKind;
+pub use openfx_pixels::{
+    ConvertedVideo, SessionClock, convert_window_to_rgba, video_interval_ticks,
 };
 pub use sender::{LatestSlot, SendSession, VideoJob, prepare_ndi_runtime};
 
@@ -20,7 +21,7 @@ use openfx::bindings::{
     kOfxActionUnload, kOfxBitDepthByte, kOfxBitDepthFloat, kOfxBitDepthShort,
     kOfxImageComponentRGB, kOfxImageComponentRGBA, kOfxImageEffectActionDescribeInContext,
     kOfxImageEffectActionRender, kOfxImageEffectContextFilter, kOfxImageEffectContextGeneral,
-    kOfxImageEffectOutputClipName, kOfxImageEffectPluginPropGrouping,
+    kOfxImageEffectFrameVarying, kOfxImageEffectOutputClipName, kOfxImageEffectPluginPropGrouping,
     kOfxImageEffectPluginPropHostFrameThreading, kOfxImageEffectPluginRenderThreadSafety,
     kOfxImageEffectPropFrameRate, kOfxImageEffectPropRenderWindow,
     kOfxImageEffectPropSupportedComponents, kOfxImageEffectPropSupportedContexts,
@@ -186,6 +187,9 @@ fn action_describe_in_context(effect: OfxImageEffectHandle) -> OfxResult<()> {
             kOfxImageComponentRGB,
         )?;
         clip.set_int(kOfxImageEffectPropSupportsTiles, 0, 0)?;
+        if name == kOfxImageEffectOutputClipName {
+            let _ = clip.set_int(kOfxImageEffectFrameVarying, 0, 1);
+        }
     }
     params::describe(suites, effect)
 }
@@ -235,8 +239,8 @@ fn action_render(effect: OfxImageEffectHandle, in_args: OfxPropertySetHandle) ->
     pixels::copy_image_window(&source, &output, window)?;
 
     let instance = get_instance_data::<PluginInstance>(suites, effect)?;
-    instance.sync_from_params(effect, time)?;
-    if !instance.config_snapshot().enabled || !instance.should_send(time) {
+    let _ = instance.sync_from_params(effect, time);
+    if !instance.config_snapshot().enabled {
         return Ok(());
     }
 
@@ -246,12 +250,13 @@ fn action_render(effect: OfxImageEffectHandle, in_args: OfxPropertySetHandle) ->
         .and_then(|props| props.get_double(kOfxImageEffectPropFrameRate, 0).ok())
         .unwrap_or(60.0);
     let (fps_n, fps_d) = fps_to_rational(fps);
-    match pixels::image_to_rgba(&source, window) {
+    match pixels::image_to_rgba(&source, window, Some(instance.pixel_pool())) {
         Ok(converted) => {
             let mut job = VideoJob::from(converted);
             job.timecode = instance.next_timestamp();
             job.fps_n = fps_n;
             job.fps_d = fps_d;
+            job.ofx_time = time;
             instance.push_video(job);
         }
         Err(err) => eprintln!("NDI frame convert skipped: {err}"),

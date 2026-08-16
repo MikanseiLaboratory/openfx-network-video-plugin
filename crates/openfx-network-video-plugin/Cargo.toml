@@ -15,5 +15,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 openfx.workspace = true
+openfx-pixels.workspace = true
 grafton-ndi.workspace = true
 windows-sys.workspace = true

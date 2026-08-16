@@ -37,7 +37,7 @@ Resolve を終了してから `C:\Program Files\Common Files\OFX\Plugins\OpenFXN
 
 ## 開発
 
-ビルドには Rust 1.97、LLVM（bindgen / libclang）、NDI 6 SDK が必要です。
+ビルドには Rust 1.97、LLVM（bindgen / libclang）、NDI 6 SDK が必要です。OpenFX ヘルパーと画素変換は [openfx-pixels](https://github.com/MikanseiLaboratory/openfx-pixels) を git revision で参照します。
 
 ```powershell
 # NDI 6 SDK: https://ndi.video/type/developer/

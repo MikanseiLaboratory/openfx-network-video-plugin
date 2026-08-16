@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use grafton_ndi::{NDI, PixelFormat, Sender, SenderOptions, VideoFrame};
+use grafton_ndi::{NDI, PixelFormat, ScanType, Sender, SenderOptions, VideoFrame};
 use windows_sys::Win32::Foundation::{GetLastError, HMODULE, MAX_PATH};
 use windows_sys::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -14,7 +14,8 @@ use windows_sys::Win32::System::LibraryLoader::{
 };
 
 use crate::config::PluginConfig;
-use crate::media::{ConvertedVideo, PixelFormatKind};
+use crate::media::{PixelFormatKind, pixel_format_kind};
+use openfx_pixels::{ConvertedVideo, PixelPool, packed_frame_hash};
 
 const NDI_DLL: &str = "Processing.NDI.Lib.x64.dll";
 
@@ -28,6 +29,7 @@ pub struct VideoJob {
     pub timecode: i64,
     pub fps_n: i32,
     pub fps_d: i32,
+    pub ofx_time: f64,
 }
 
 impl From<ConvertedVideo> for VideoJob {
@@ -36,11 +38,12 @@ impl From<ConvertedVideo> for VideoJob {
             width: value.width,
             height: value.height,
             stride: value.stride,
-            rgba: value.rgba,
-            pixel_format: value.pixel_format,
+            pixel_format: pixel_format_kind(value.has_alpha),
+            rgba: value.data,
             timecode: 0,
             fps_n: 60,
             fps_d: 1,
+            ofx_time: 0.0,
         }
     }
 }
@@ -60,10 +63,16 @@ impl<T> LatestSlot<T> {
     }
 
     pub fn push(&self, item: T) {
+        drop(self.push_replacing(item));
+    }
+
+    pub fn push_replacing(&self, item: T) -> Option<T> {
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.replace(item).is_some() {
+        let old = slot.replace(item);
+        if old.is_some() {
             self.drops.fetch_add(1, Ordering::Relaxed);
         }
+        old
     }
 
     pub fn take(&self) -> Option<T> {
@@ -89,32 +98,35 @@ pub struct SendSession {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
     video_slot: Arc<LatestSlot<VideoJob>>,
+    pool: Arc<PixelPool>,
 }
 
 impl SendSession {
     pub fn start(config: PluginConfig) -> Result<Self, String> {
+        Self::start_with_pool(config, Arc::new(PixelPool::new()))
+    }
+
+    pub fn start_with_pool(config: PluginConfig, pool: Arc<PixelPool>) -> Result<Self, String> {
         prepare_ndi_runtime()?;
         let ndi = NDI::new().map_err(|e| format!("NDI runtime init failed: {e}"))?;
-        let mut builder = SenderOptions::builder(config.source_name.clone()).clock_video(true);
+        let mut builder = SenderOptions::builder(config.source_name.clone()).clock_video(false);
         if let Some(groups) = config.groups_opt() {
             builder = builder.groups(groups);
         }
         let options = builder.build();
         let sender =
             Sender::new(&ndi, &options).map_err(|e| format!("NDI sender create failed: {e}"))?;
-        drop(ndi);
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let video_slot = Arc::new(LatestSlot::new());
         let video_slot_thread = Arc::clone(&video_slot);
+        let pool_thread = Arc::clone(&pool);
 
         let join = thread::Builder::new()
             .name("openfx-ndi-sender".into())
             .spawn(move || {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    sender_loop(sender, video_slot_thread, stop_thread);
-                }));
+                sender_loop(ndi, sender, video_slot_thread, pool_thread, stop_thread);
             })
             .map_err(|e| format!("failed to spawn NDI sender thread: {e}"))?;
 
@@ -122,11 +134,14 @@ impl SendSession {
             stop,
             join: Some(join),
             video_slot,
+            pool,
         })
     }
 
     pub fn push_video(&self, job: VideoJob) {
-        self.video_slot.push(job);
+        if let Some(old) = self.video_slot.push_replacing(job) {
+            self.pool.release(old.rgba);
+        }
     }
 
     pub fn stop(&mut self) {
@@ -134,7 +149,9 @@ impl SendSession {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
-        self.video_slot.clear();
+        if let Some(job) = self.video_slot.take() {
+            self.pool.release(job.rgba);
+        }
     }
 }
 
@@ -144,15 +161,46 @@ impl Drop for SendSession {
     }
 }
 
-fn sender_loop(sender: Sender, video_slot: Arc<LatestSlot<VideoJob>>, stop: Arc<AtomicBool>) {
+fn sender_loop(
+    _ndi: NDI,
+    sender: Sender,
+    video_slot: Arc<LatestSlot<VideoJob>>,
+    pool: Arc<PixelPool>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut last_time = f64::NAN;
+    let mut last_wh = (0u32, 0u32);
+    let mut last_hash = 0u64;
     while !stop.load(Ordering::Acquire) {
-        if let Some(job) = video_slot.take() {
-            match video_frame(job) {
-                Ok(frame) => sender.send_video(&frame),
-                Err(e) => eprintln!("NDI video frame failed: {e}"),
+        let had_job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(job) = video_slot.take() {
+                let hash = packed_frame_hash(job.width, job.height, &job.rgba);
+                if job.ofx_time == last_time
+                    && last_wh == (job.width, job.height)
+                    && hash == last_hash
+                {
+                    pool.release(job.rgba);
+                    return true;
+                }
+                last_time = job.ofx_time;
+                last_wh = (job.width, job.height);
+                last_hash = hash;
+                match video_frame(job) {
+                    Ok(frame) => sender.send_video(&frame),
+                    Err(e) => eprintln!("NDI video frame failed: {e}"),
+                }
+                true
+            } else {
+                false
             }
-        } else {
-            thread::sleep(Duration::from_millis(1));
+        }));
+        match had_job {
+            Ok(true) => {}
+            Ok(false) => thread::sleep(Duration::from_millis(1)),
+            Err(_) => {
+                eprintln!("NDI sender loop panicked; keeping sender thread alive");
+                thread::sleep(Duration::from_millis(1));
+            }
         }
     }
 }
@@ -166,7 +214,14 @@ fn video_frame(job: VideoJob) -> Result<VideoFrame, String> {
         .resolution(job.width as i32, job.height as i32)
         .pixel_format(pixel_format)
         .frame_rate(job.fps_n, job.fps_d)
+        .aspect_ratio(if job.height == 0 {
+            1.0
+        } else {
+            job.width as f32 / job.height as f32
+        })
+        .scan_type(ScanType::Progressive)
         .timecode(job.timecode)
+        .timestamp(job.timecode)
         .build()
         .map_err(|e| e.to_string())?;
     frame.replace_data(job.rgba).map_err(|e| e.to_string())?;
@@ -284,6 +339,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             join: None,
             video_slot: Arc::new(LatestSlot::new()),
+            pool: Arc::new(PixelPool::new()),
         };
         session.stop();
         session.stop();
@@ -308,6 +364,7 @@ mod tests {
             timecode: 1,
             fps_n: 60,
             fps_d: 1,
+            ofx_time: 0.0,
         });
         session.stop();
         session.stop();

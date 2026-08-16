@@ -5,8 +5,6 @@ pub const PLUGIN_AUTHOR: &str = "未完成成果物研究所";
 pub const DEFAULT_SOURCE_NAME: &str = "DaVinci Resolve";
 pub const MAX_SOURCE_NAME_LEN: usize = 63;
 pub const MAX_GROUPS_LEN: usize = 255;
-pub const MIN_VIDEO_DIM: u32 = 16;
-pub const TICKS_PER_SECOND: i64 = 10_000_000;
 pub const NDI_TRADEMARK: &str = "NDI® is a registered trademark of Vizrt NDI AB.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

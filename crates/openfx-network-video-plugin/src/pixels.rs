@@ -1,53 +1,38 @@
 use openfx::image::{ClipImage, RectI};
-use openfx::status::{OfxResult, kOfxStat};
+use openfx_pixels::{
+    ConvertSource, ConvertSpec, ConvertedVideo, MediaError, PixelPool, convert_window_into,
+};
 
-use crate::media::{ConvertedVideo, MediaError, convert_window_to_rgba};
+pub use openfx_pixels::copy_image_window;
 
-pub fn copy_image_window(src: &ClipImage<'_>, dst: &ClipImage<'_>, window: RectI) -> OfxResult<()> {
-    if src.depth != dst.depth || src.components != dst.components {
-        return Err(kOfxStat::ErrUnsupported);
+pub fn image_to_rgba(
+    image: &ClipImage<'_>,
+    window: RectI,
+    pool: Option<&PixelPool>,
+) -> Result<ConvertedVideo, MediaError> {
+    let scratch = pool.map(PixelPool::take).unwrap_or_default();
+    unsafe {
+        convert_window_into(
+            scratch,
+            ConvertSource {
+                window,
+                bounds: image.bounds,
+                row_bytes: image.row_bytes,
+                data: image.data,
+                depth: image.depth,
+                components: image.components,
+            },
+            ConvertSpec::RGBA,
+        )
     }
-    let bpp = src.bytes_per_pixel();
-    let x1 = window.x1.max(src.bounds.x1).max(dst.bounds.x1);
-    let x2 = window.x2.min(src.bounds.x2).min(dst.bounds.x2);
-    let y1 = window.y1.max(src.bounds.y1).max(dst.bounds.y1);
-    let y2 = window.y2.min(src.bounds.y2).min(dst.bounds.y2);
-    if x2 <= x1 || y2 <= y1 {
-        return Ok(());
-    }
-    let width_bytes = (x2 - x1) as usize * bpp;
-    for y in y1..y2 {
-        unsafe {
-            let src_ptr = src.pixel_ptr(x1, y)?;
-            let dst_ptr = dst.pixel_ptr(x1, y)?;
-            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, width_bytes);
-        }
-    }
-    Ok(())
-}
-
-pub fn image_to_rgba(image: &ClipImage<'_>, window: RectI) -> Result<ConvertedVideo, MediaError> {
-    convert_window_to_rgba(window, image.depth, image.components, |x, y| {
-        if x < image.bounds.x1
-            || x >= image.bounds.x2
-            || y < image.bounds.y1
-            || y >= image.bounds.y2
-        {
-            return None;
-        }
-        let bpp = image.bytes_per_pixel();
-        unsafe {
-            let ptr = image.pixel_ptr(x, y).ok()?;
-            Some(std::slice::from_raw_parts(ptr, bpp).to_vec())
-        }
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::packed_row_to_rgba_pixel;
+    use crate::media::pixel_format_kind;
     use openfx::image::{PixelComponents, PixelDepth};
+    use openfx_pixels::{PackedOrder, convert_window_to_rgba, packed_row_to_pixel};
 
     fn convert_buffer(
         width: i32,
@@ -63,16 +48,9 @@ mod tests {
             x2: width,
             y2: height,
         };
-        convert_window_to_rgba(window, depth, components, |x, y| {
-            let bpp = depth.bytes_per_channel() * components.count();
-            let offset = if row_bytes >= 0 {
-                y * row_bytes + x * bpp as i32
-            } else {
-                (height - 1 - y) * row_bytes.abs() + x * bpp as i32
-            };
-            let start = offset as usize;
-            Some(data[start..start + bpp].to_vec())
-        })
+        unsafe {
+            convert_window_to_rgba(window, window, row_bytes, data.as_ptr(), depth, components)
+        }
         .unwrap()
     }
 
@@ -89,8 +67,13 @@ mod tests {
             &src,
         );
         let last_row = ((16 - 1) * 16 * 4) as usize;
-        assert_eq!(&converted.rgba[last_row..last_row + 4], &[10, 20, 30, 40]);
+        assert_eq!(&converted.data[last_row..last_row + 4], &[10, 20, 30, 40]);
         assert!(converted.has_alpha);
+        assert_eq!(converted.order, PackedOrder::Rgba);
+        assert_eq!(
+            pixel_format_kind(converted.has_alpha),
+            crate::media::PixelFormatKind::Rgba
+        );
     }
 
     #[test]
@@ -98,7 +81,7 @@ mod tests {
         let src = [1u8, 2, 3].repeat(16 * 16);
         let converted =
             convert_buffer(16, 16, PixelDepth::Byte, PixelComponents::Rgb, 16 * 3, &src);
-        assert_eq!(converted.rgba[3], 255);
+        assert_eq!(converted.data[3], 255);
         assert!(!converted.has_alpha);
     }
 
@@ -116,7 +99,7 @@ mod tests {
         );
         let last_row = ((16 - 1) * 16 * 4) as usize;
         assert_eq!(
-            &converted.rgba[last_row..last_row + 4],
+            &converted.data[last_row..last_row + 4],
             &[0x10, 0x20, 0x30, 0xff]
         );
 
@@ -139,7 +122,7 @@ mod tests {
             &srcf,
         );
         let last_row = ((16 - 1) * 16 * 4) as usize;
-        assert_eq!(&converted.rgba[last_row..last_row + 4], &[255, 0, 0, 255]);
+        assert_eq!(&converted.data[last_row..last_row + 4], &[255, 0, 0, 255]);
     }
 
     #[test]
@@ -150,21 +133,36 @@ mod tests {
         let stride = width * bpp;
         let mut src = vec![0u8; (stride * height) as usize];
         src[0..4].copy_from_slice(&[9, 8, 7, 255]);
-        let converted = convert_buffer(
-            width,
-            height,
-            PixelDepth::Byte,
-            PixelComponents::Rgba,
-            -stride,
-            &src,
-        );
-        assert_eq!(&converted.rgba[0..4], &[9, 8, 7, 255]);
+        let window = RectI {
+            x1: 0,
+            y1: 0,
+            x2: width,
+            y2: height,
+        };
+        let data = unsafe { src.as_ptr().add(((height - 1) * stride) as usize) };
+        let converted = unsafe {
+            convert_window_to_rgba(
+                window,
+                window,
+                -stride,
+                data,
+                PixelDepth::Byte,
+                PixelComponents::Rgba,
+            )
+        }
+        .unwrap();
+        assert_eq!(&converted.data[0..4], &[9, 8, 7, 255]);
     }
 
     #[test]
     fn packed_pixel_helper() {
         assert_eq!(
-            packed_row_to_rgba_pixel(PixelDepth::Byte, PixelComponents::Rgb, &[1, 2, 3]),
+            packed_row_to_pixel(
+                PackedOrder::Rgba,
+                PixelDepth::Byte,
+                PixelComponents::Rgb,
+                &[1, 2, 3]
+            ),
             [1, 2, 3, 255]
         );
     }
