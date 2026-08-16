@@ -1,0 +1,54 @@
+NDI® runtime terms (not the plugin license)
+===========================================
+
+The OpenFX plugin source and binary authored in this repository are licensed
+under the MIT License (see LICENSE). That MIT grant does not apply to the NDI®
+runtime redistributed beside the plugin.
+
+This file is a packaging notice. It is not a substitute for the current NDI
+SDK / runtime license presented by Vizrt NDI AB. Before building, packaging,
+or distributing a release that includes Processing.NDI.Lib.x64.dll you must
+read and accept the then-current NDI SDK agreement and the unmodified
+Processing.NDI.Lib.Licenses.txt that ships with the SDK/runtime.
+
+NDI® is a registered trademark of Vizrt NDI AB.
+https://ndi.video/
+
+What is bundled
+---------------
+
+Release packages may include only:
+
+- Processing.NDI.Lib.x64.dll (unmodified NDI runtime)
+- Processing.NDI.Lib.Licenses.txt (unmodified)
+
+They must not include NDI Tools, SDK headers, import libraries, or the
+Advanced SDK.
+
+Runtime-only restrictions
+-------------------------
+
+The NDI runtime is proprietary. Typical SDK/runtime terms include, without
+limitation:
+
+- No modification of the runtime.
+- No reverse engineering, decompilation, or disassembly of the runtime except
+  to the limited extent that applicable law requires allowing it.
+- No warranty. The runtime is provided by its licensor without guarantees of
+  merchantability, fitness for a particular purpose, or non-infringement.
+- Limitation of liability as stated in the official NDI licenses.
+- Redistribution only in the form and under the conditions permitted by the
+  current NDI SDK agreement, including any 30-day SDK refresh requirements.
+
+If those terms conflict with this summary, the official NDI licenses control.
+
+Plugin vs runtime
+-----------------
+
+- Plugin code (this repository): MIT License.
+- Third-party Rust crates: THIRD_PARTY_NOTICES.md.
+- NDI runtime / SDK: Processing.NDI.Lib.Licenses.txt and the NDI SDK EULA.
+
+Using this plugin does not make the combined work an official NDI product.
+The plugin is unofficial and not affiliated with, endorsed, or certified by
+Vizrt NDI AB.

@@ -1,0 +1,19 @@
+[package]
+name = "openfx-network-video-plugin"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "OpenFX filter that live-sends video over NDI®"
+
+[lib]
+name = "openfx_network_video"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openfx.workspace = true
+grafton-ndi.workspace = true
+windows-sys.workspace = true
