@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use openfx::bindings::{OfxImageEffectHandle, OfxTime};
@@ -15,6 +16,8 @@ pub struct PluginInstance {
     session: Mutex<Option<SendSession>>,
     clock: Mutex<SessionClock>,
     pixel_pool: Arc<PixelPool>,
+    enabled: AtomicBool,
+    fps: AtomicU64,
 }
 
 #[cfg(test)]
@@ -56,6 +59,8 @@ impl PluginInstance {
             session: Mutex::new(None),
             clock: Mutex::new(SessionClock::new()),
             pixel_pool: Arc::new(PixelPool::new()),
+            enabled: AtomicBool::new(config.enabled),
+            fps: AtomicU64::new(0),
         };
         instance.apply_config(config);
         Ok(instance)
@@ -80,6 +85,7 @@ impl PluginInstance {
             let mut current = self.config.lock().unwrap_or_else(|e| e.into_inner());
             *current = config.clone();
         }
+        self.enabled.store(config.enabled, Ordering::Relaxed);
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = session.as_mut() {
             existing.stop();
@@ -93,11 +99,29 @@ impl PluginInstance {
         }
     }
 
+    #[allow(dead_code)]
     pub fn config_snapshot(&self) -> PluginConfig {
         self.config
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    #[inline(always)]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    #[inline(always)]
+    pub fn cached_fps(&self, fetch: impl FnOnce() -> (i32, i32)) -> (i32, i32) {
+        let packed = self.fps.load(Ordering::Relaxed);
+        if packed != 0 {
+            return ((packed >> 32) as i32, packed as i32);
+        }
+        let (n, d) = fetch();
+        self.fps
+            .store(((n as u64) << 32) | (d as u32 as u64), Ordering::Relaxed);
+        (n, d)
     }
 
     pub fn pixel_pool(&self) -> &PixelPool {

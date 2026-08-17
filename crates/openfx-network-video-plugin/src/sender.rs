@@ -174,17 +174,20 @@ fn sender_loop(
     while !stop.load(Ordering::Acquire) {
         let had_job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Some(job) = video_slot.take() {
-                let hash = packed_frame_hash(job.width, job.height, &job.rgba);
-                if job.ofx_time == last_time
-                    && last_wh == (job.width, job.height)
-                    && hash == last_hash
-                {
-                    pool.release(job.rgba);
-                    return true;
+                // Playback always has a new OFX time — skip the 8 MiB CRC.
+                // Pause/scrub repeats ofx_time; hash only then.
+                if job.ofx_time == last_time && last_wh == (job.width, job.height) {
+                    let hash = packed_frame_hash(job.width, job.height, &job.rgba);
+                    if hash == last_hash {
+                        pool.release(job.rgba);
+                        return true;
+                    }
+                    last_hash = hash;
+                } else {
+                    last_time = job.ofx_time;
+                    last_wh = (job.width, job.height);
+                    last_hash = 0;
                 }
-                last_time = job.ofx_time;
-                last_wh = (job.width, job.height);
-                last_hash = hash;
                 match video_frame(job) {
                     Ok(frame) => sender.send_video(&frame),
                     Err(e) => eprintln!("NDI video frame failed: {e}"),
