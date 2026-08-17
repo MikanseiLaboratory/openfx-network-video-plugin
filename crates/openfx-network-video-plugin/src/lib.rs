@@ -15,6 +15,7 @@ pub use sender::{LatestSlot, SendSession, VideoJob, prepare_ndi_runtime};
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::OnceLock;
 
+use openfx::MultiThread;
 use openfx::bindings::{
     OfxHost, OfxImageEffectHandle, OfxPropertySetHandle, kOfxActionCreateInstance,
     kOfxActionDescribe, kOfxActionDestroyInstance, kOfxActionInstanceChanged, kOfxActionLoad,
@@ -49,6 +50,7 @@ const _: &str = NDI_TRADEMARK;
 
 struct Shared {
     suites: Suites,
+    multithread: Option<MultiThread>,
 }
 
 static HOST: OnceLock<Host> = OnceLock::new();
@@ -102,7 +104,11 @@ fn shared() -> OfxResult<&'static Shared> {
 fn action_load() -> OfxResult<()> {
     let host = *HOST.get().ok_or(kOfxStat::Failed)?;
     let suites = unsafe { Suites::fetch(host) }?;
-    let _ = SHARED.set(Shared { suites });
+    let multithread = unsafe { MultiThread::fetch(host) }.ok();
+    let _ = SHARED.set(Shared {
+        suites,
+        multithread,
+    });
     Ok(())
 }
 
@@ -220,7 +226,8 @@ fn action_instance_changed(
 }
 
 fn action_render(effect: OfxImageEffectHandle, in_args: OfxPropertySetHandle) -> OfxResult<()> {
-    let suites = &shared()?.suites;
+    let shared = shared()?;
+    let suites = &shared.suites;
     let in_props = openfx::suites::PropertySet::new(in_args, suites.property)?;
     let time = in_props.get_double(kOfxPropTime, 0)?;
     let mut window_vals = [0; 4];
@@ -250,7 +257,12 @@ fn action_render(effect: OfxImageEffectHandle, in_args: OfxPropertySetHandle) ->
         .and_then(|props| props.get_double(kOfxImageEffectPropFrameRate, 0).ok())
         .unwrap_or(60.0);
     let (fps_n, fps_d) = fps_to_rational(fps);
-    match pixels::image_to_rgba(&source, window, Some(instance.pixel_pool())) {
+    match pixels::image_to_rgba(
+        &source,
+        window,
+        Some(instance.pixel_pool()),
+        shared.multithread.as_ref(),
+    ) {
         Ok(converted) => {
             let mut job = VideoJob::from(converted);
             job.timecode = instance.next_timestamp();
