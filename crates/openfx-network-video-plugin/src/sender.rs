@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use grafton_ndi::{NDI, PixelFormat, ScanType, Sender, SenderOptions, VideoFrame};
+use grafton_ndi::{BorrowedVideoFrame, NDI, PixelFormat, Sender, SenderOptions};
 use windows_sys::Win32::Foundation::{GetLastError, HMODULE, MAX_PATH};
 use windows_sys::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -163,7 +163,7 @@ impl Drop for SendSession {
 
 fn sender_loop(
     _ndi: NDI,
-    sender: Sender,
+    mut sender: Sender,
     video_slot: Arc<LatestSlot<VideoJob>>,
     pool: Arc<PixelPool>,
     stop: Arc<AtomicBool>,
@@ -171,35 +171,27 @@ fn sender_loop(
     let mut last_time = f64::NAN;
     let mut last_wh = (0u32, 0u32);
     let mut last_hash = 0u64;
+    let mut pending: Option<VideoJob> = None;
     while !stop.load(Ordering::Acquire) {
-        let had_job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Some(job) = video_slot.take() {
-                // Playback always has a new OFX time — skip the 8 MiB CRC.
-                // Pause/scrub repeats ofx_time; hash only then.
-                if job.ofx_time == last_time && last_wh == (job.width, job.height) {
-                    let hash = packed_frame_hash(job.width, job.height, &job.rgba);
-                    if hash == last_hash {
-                        pool.release(job.rgba);
-                        return true;
-                    }
-                    last_hash = hash;
-                } else {
-                    last_time = job.ofx_time;
-                    last_wh = (job.width, job.height);
-                    last_hash = 0;
-                }
-                match video_frame(job) {
-                    Ok(frame) => sender.send_video(&frame),
-                    Err(e) => eprintln!("NDI video frame failed: {e}"),
-                }
-                true
-            } else {
-                false
-            }
+        let job = pending.take().or_else(|| video_slot.take());
+        let Some(job) = job else {
+            thread::sleep(Duration::from_millis(1));
+            continue;
+        };
+        let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            send_job(
+                &mut sender,
+                &video_slot,
+                &pool,
+                &stop,
+                job,
+                &mut last_time,
+                &mut last_wh,
+                &mut last_hash,
+            )
         }));
-        match had_job {
-            Ok(true) => {}
-            Ok(false) => thread::sleep(Duration::from_millis(1)),
+        match sent {
+            Ok(next) => pending = next,
             Err(_) => {
                 eprintln!("NDI sender loop panicked; keeping sender thread alive");
                 thread::sleep(Duration::from_millis(1));
@@ -208,28 +200,61 @@ fn sender_loop(
     }
 }
 
-fn video_frame(job: VideoJob) -> Result<VideoFrame, String> {
+fn send_job(
+    sender: &mut Sender,
+    video_slot: &LatestSlot<VideoJob>,
+    pool: &PixelPool,
+    stop: &AtomicBool,
+    job: VideoJob,
+    last_time: &mut f64,
+    last_wh: &mut (u32, u32),
+    last_hash: &mut u64,
+) -> Option<VideoJob> {
+    if job.ofx_time == *last_time && *last_wh == (job.width, job.height) {
+        let hash = packed_frame_hash(job.width, job.height, &job.rgba);
+        if hash == *last_hash {
+            pool.release(job.rgba);
+            return None;
+        }
+        *last_hash = hash;
+    } else {
+        *last_time = job.ofx_time;
+        *last_wh = (job.width, job.height);
+        *last_hash = 0;
+    }
+
     let pixel_format = match job.pixel_format {
         PixelFormatKind::Rgba => PixelFormat::RGBA,
         PixelFormatKind::Rgbx => PixelFormat::RGBX,
     };
-    let mut frame = VideoFrame::builder()
-        .resolution(job.width as i32, job.height as i32)
-        .pixel_format(pixel_format)
-        .frame_rate(job.fps_n, job.fps_d)
-        .aspect_ratio(if job.height == 0 {
-            1.0
-        } else {
-            job.width as f32 / job.height as f32
-        })
-        .scan_type(ScanType::Progressive)
-        .timecode(job.timecode)
-        .timestamp(job.timecode)
-        .build()
-        .map_err(|e| e.to_string())?;
-    frame.replace_data(job.rgba).map_err(|e| e.to_string())?;
-    let _ = job.stride;
-    Ok(frame)
+    let borrowed = match BorrowedVideoFrame::try_from_uncompressed(
+        &job.rgba,
+        job.width as i32,
+        job.height as i32,
+        pixel_format,
+        job.fps_n,
+        job.fps_d,
+    ) {
+        Ok(frame) => frame,
+        Err(e) => {
+            eprintln!("NDI video frame failed: {e}");
+            pool.release(job.rgba);
+            return None;
+        }
+    };
+    let token = sender.send_video_async(&borrowed);
+    let next = loop {
+        if stop.load(Ordering::Acquire) {
+            break None;
+        }
+        if let Some(next) = video_slot.take() {
+            break Some(next);
+        }
+        thread::sleep(Duration::from_millis(1));
+    };
+    drop(token);
+    pool.release(job.rgba);
+    next
 }
 
 pub fn prepare_ndi_runtime() -> Result<PathBuf, String> {
