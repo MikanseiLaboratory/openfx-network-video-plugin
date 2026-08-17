@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/openfx-network-video-plugin"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+authors = ["MikanseiLaboratory"]
+repository = "https://github.com/MikanseiLaboratory/openfx-network-video-plugin"
+
+[workspace.dependencies]
+openfx = { git = "https://github.com/MikanseiLaboratory/openfx-pixels", rev = "c0582afae3c59ec1fe40d463afe6ae7b5ed24801" }
+openfx-pixels = { git = "https://github.com/MikanseiLaboratory/openfx-pixels", rev = "c0582afae3c59ec1fe40d463afe6ae7b5ed24801" }
+grafton-ndi = { version = "=1.0.0", default-features = false }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
