@@ -6,7 +6,7 @@ NDI® is a registered trademark of Vizrt NDI AB.
 
 ## 導入
 
-1. `OpenFXNetworkVideo.ofx.bundle` を `C:\Program Files\Common Files\OFX\Plugins` にコピーする
+1. `OpenFXNetworkVideo.ofx.bundle` を `C:\Program Files\Common Files\OFX\Plugins` にコピーする（`./scripts/install.ps1` でも可）
 2. Resolve を起動し直す
 3. Fusion または Color の OpenFX 一覧に **Mikansei Laboratory / Network Video Output** が出ることを確認する
 

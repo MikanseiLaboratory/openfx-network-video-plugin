@@ -10,8 +10,8 @@ authors = ["MikanseiLaboratory"]
 repository = "https://github.com/MikanseiLaboratory/openfx-network-video-plugin"
 
 [workspace.dependencies]
-openfx = { git = "https://github.com/MikanseiLaboratory/openfx-pixels", rev = "c0582afae3c59ec1fe40d463afe6ae7b5ed24801" }
-openfx-pixels = { git = "https://github.com/MikanseiLaboratory/openfx-pixels", rev = "c0582afae3c59ec1fe40d463afe6ae7b5ed24801" }
+openfx = { git = "https://github.com/MikanseiLaboratory/openfx-pixels", rev = "8e12b181576fddcc5555c0b205667cb6f909dcea" }
+openfx-pixels = { git = "https://github.com/MikanseiLaboratory/openfx-pixels", rev = "8e12b181576fddcc5555c0b205667cb6f909dcea" }
 grafton-ndi = { version = "=1.0.0", default-features = false }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 

@@ -20,6 +20,14 @@ NDI® is a registered trademark of Vizrt NDI AB.
 C:\Program Files\Common Files\OFX\Plugins
 ```
 
+ローカルでビルドした場合は、管理者 PowerShell から次を実行します。
+
+```powershell
+cargo build --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1
+./scripts/install.ps1
+```
+
 Resolve を起動し直すと、OpenFX の **Mikansei Laboratory / Network Video Output** から使えます。
 
 ## 使い方
