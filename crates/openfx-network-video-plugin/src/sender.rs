@@ -168,9 +168,7 @@ fn sender_loop(
     pool: Arc<PixelPool>,
     stop: Arc<AtomicBool>,
 ) {
-    let mut last_time = f64::NAN;
-    let mut last_wh = (0u32, 0u32);
-    let mut last_hash = 0u64;
+    let mut dedup = SendDedupState::default();
     let mut pending: Option<VideoJob> = None;
     while !stop.load(Ordering::Acquire) {
         let job = pending.take().or_else(|| video_slot.take());
@@ -179,16 +177,7 @@ fn sender_loop(
             continue;
         };
         let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            send_job(
-                &mut sender,
-                &video_slot,
-                &pool,
-                &stop,
-                job,
-                &mut last_time,
-                &mut last_wh,
-                &mut last_hash,
-            )
+            send_job(&mut sender, &video_slot, &pool, &stop, job, &mut dedup)
         }));
         match sent {
             Ok(next) => pending = next,
@@ -200,27 +189,41 @@ fn sender_loop(
     }
 }
 
+struct SendDedupState {
+    time: f64,
+    wh: (u32, u32),
+    hash: u64,
+}
+
+impl Default for SendDedupState {
+    fn default() -> Self {
+        Self {
+            time: f64::NAN,
+            wh: (0, 0),
+            hash: 0,
+        }
+    }
+}
+
 fn send_job(
     sender: &mut Sender,
     video_slot: &LatestSlot<VideoJob>,
     pool: &PixelPool,
     stop: &AtomicBool,
     job: VideoJob,
-    last_time: &mut f64,
-    last_wh: &mut (u32, u32),
-    last_hash: &mut u64,
+    dedup: &mut SendDedupState,
 ) -> Option<VideoJob> {
-    if job.ofx_time == *last_time && *last_wh == (job.width, job.height) {
+    if job.ofx_time == dedup.time && dedup.wh == (job.width, job.height) {
         let hash = packed_frame_hash(job.width, job.height, &job.rgba);
-        if hash == *last_hash {
+        if hash == dedup.hash {
             pool.release(job.rgba);
             return None;
         }
-        *last_hash = hash;
+        dedup.hash = hash;
     } else {
-        *last_time = job.ofx_time;
-        *last_wh = (job.width, job.height);
-        *last_hash = 0;
+        dedup.time = job.ofx_time;
+        dedup.wh = (job.width, job.height);
+        dedup.hash = 0;
     }
 
     let pixel_format = match job.pixel_format {
